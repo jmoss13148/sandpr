@@ -1,90 +1,121 @@
-##' @description 
-##' 
-##' 
+##' @description Train a NN model using the Keras framework and Tensorflow backend 
 ##' 
 ##' @return dataframe - maybe graphs 
+##' 
+##' @param x processed fundamentals dataset 
+##' 
+##' @import keras
+##' @import tensorflow
+##' @import ggplot2
+##' 
 ##' @export 
 
-train_nn = function(x, train_proportion, layers = c(), dropout_rate = 0.2) { 
-
-## First we should split the data into training and test sets 
-train_size = floor(train_proportion * nrow(x))
-
-## Training indices 
-train_indices = sample(1:nrow(x), size = train_size)
-
-train = x[train_indices, ]
-test = x[-train_indices, ]
-
-## Split into predictor and response datasets and select correct columns
-train_x = select(train, -one_year_price, -Ticker.Symbol, -Period.Ending)
-train_y = select(train, one_year_price, -Period.Ending)
-
-test_x = select(test, -one_year_price, -Ticker.Symbol, -Period.Ending)
-test_y = select(test, one_year_price, -Period.Ending)
-
-model <- keras_model_sequential() 
-model %>% 
-    layer_dense(units = layers[1], activation = "relu", input_shape = c(75)) %>% 
-    layer_dropout(rate = dropout_rate) %>%
-    layer_dense(units = layers[2], activation = "relu") %>% 
-    layer_dropout(rate = dropout_rate) %>%
+train_nn = function(x, 
+                    layers                 = c(50), 
+                    portfolio              = "long short",
+                    dropout_rate           = 0.2,
+                    activation             = "relu",
+                    loss_function          = "mean_squared_error",
+                    optimizer              = optimizer_adam,
+                    learning_rate          = 0.0001,
+                    n_epochs               = 50,
+                    batch_size             = 32,
+                    validation_prop        = 0.1,
+                    seed                   = 42
+                    ) { 
     
-    layer_dense(units = 1)
+    ## For the purpose of reproducible results
+    sess <- tf$Session(graph = tf$get_default_graph())
     
-# for(i in 1:(length(layers) - 1)) {
-#     layer_dense(model, units = layers[i + 1], activation = "relu") %>%
-#     layer_dropout(rate = dropout_rate) 
-# }
-
-## Final layer - should have output of 1
-# model %>%
-#     layer_dense(units = 1)
-
-# Define custom metric using backend tensor functions
-K <- backend()
-
-returns = function(y_true, y_pred) {
+    ## Instruct Keras to use this session
+    K = backend()
+    K$set_session(sess)
     
-    ## Find integer value for top 20% of stocks 
-    number = K$tf$cast(K$tf$multiply(K$tf$constant(0.1), K$tf$cast(K$tf$size(y_pred), dtype = K$tf$float32)), dtype = K$tf$int32)
+    ## Reproducibility 
+    tf$set_random_seed(seed)
     
-    ## Get indices and values for top 20% of predictions
-    top = K$tf$nn$top_k(input = K$tf$squeeze(y_pred), k = number)
+    ## Use previous data to predict any stock in the future 
+    ## Order in ascending date
+    x = x %>% arrange(Period.Ending)
+        
+    ## Train before 2015, test 2015 
+    train = filter(x, Period.Ending <= "2015-01-01")
+    test = filter(x, Period.Ending >= "2015-01-01")
+        
+    ## Get test stocks for later analysis
+    test_stocks = test$Ticker.Symbol
+    test_dates = test$Period.Ending
     
-    ## Values for top predictions
-    top_values = K$tf$gather(params = y_pred, indices = top$indices)
+    ## Split into predictor and response datasets and select correct columns
+    train_x = select(train, -one_year_price, -Ticker.Symbol, -Period.Ending)
+    train_y = select(train, one_year_price, -Period.Ending)
     
-    ## Weight factor for porKolio (equal weighting between top 20%)
-    weight_factor = K$tf$divide(K$tf$constant(1), K$tf$cast(number, dtype = K$tf$float32))
+    test_x = select(test, -one_year_price, -Ticker.Symbol, -Period.Ending)
+    test_y = select(test, one_year_price, -Period.Ending)
     
-    ## True return values for the top predictions
-    return_values = K$tf$gather(params = y_true, indices = top$indices)
+    model <- keras_model_sequential() 
+    model %>% 
+        ## First and second layers
+        layer_dense(units = layers[1], 
+                    activation = activation, 
+                    input_shape = c(ncol(train_x)),
+                    kernel_initializer = initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed)) %>% 
+        layer_dropout(rate = dropout_rate) 
     
-    ## Real returns with this porKolio 
-    returns = K$tf$multiply(weight_factor, K$tf$cast(return_values, dtype = K$tf$float32))
+    ## Rest of layers 
+    if(length(layers) >= 2){
+        
+        ## Add as many new layers as we need
+        for(i in 1:(length(layers) - 1)) {
+        model %>%
+            layer_dense(units = layers[i + 1],
+                        activation = activation,
+                        kernel_initializer=initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed)) %>% 
+            layer_dropout(rate = dropout_rate)
+        }
+    }
     
-    return(K$tf$reduce_mean(returns))
-}
-
-## Compile the model
-model %>% compile(
-    loss = "mean_squared_error",
-    optimizer = optimizer_adam(lr = 0.0001),
-    metrics = c("Average_Returns" = returns))
-
-## Train the model 
-history <- model %>% fit(
-    as.matrix(train_x), as.matrix(train_y), 
-    epochs = 5000, batch_size = 32, 
-    validation_split = 0.25
-)
-
-plot(history)
-
-predictions = model %>% predict(as.matrix(test_x))
-
-history_df <- as.data.frame(history)
+    ## Output layer 
+    model %>% 
+        layer_dense(units = 1,
+                    kernel_initializer=initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed))
+    
+    if(portfolio == "long only") {
+        returns_metric = sandpr::returns_long_only
+    } else if(portfolio == "long short") {
+        returns_metric = sandpr::returns_long_short
+    }
+   
+    ## Compile the model
+    model %>% compile(
+        loss = loss_function,
+        optimizer = optimizer(lr = learning_rate),
+        metrics = c("Annualized_Return" = returns_metric))
+    
+    ## In order to save the best 
+    checkpointer = callback_model_checkpoint(filepath = sprintf("data/training_runs/weights.%s.{epoch:02d}.hdf5", gsub(" ", "", portfolio_type)),
+                                             monitor = c("Average_Yearly_Return"),
+                                             verbose = 1, 
+                                             save_best_only = F)
+    
+    ## Train the model 
+    history <- model %>% fit(
+        as.matrix(train_x), as.matrix(train_y), 
+        epochs = n_epochs, batch_size = batch_size, 
+        validation_split = validation_prop,
+        callbacks = checkpointer
+    )
+    
+    ## Convert to dataframe 
+    history_df <- as.data.frame(history)
+    
+    return(list("model"       = model, 
+                "history"     = history, 
+                "history_df"  = history_df,
+                "test_x"      = test_x,
+                "test_y"      = test_y,
+                "test_stocks" = test_stocks,
+                "test_dates"  = test_dates))
 
 }
 

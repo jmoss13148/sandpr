@@ -1,8 +1,11 @@
 ##' @description process_data further prepares data for the NN 
 ##' 
-##' 
+##' @import dplyr
+##' @import tidyr
 ##' 
 ##' @return a dataframe 
+##' 
+##' @export
 
 
 process_data = function(x, y) {
@@ -31,9 +34,7 @@ process_data = function(x, y) {
             ## Keep trying one day in the future 
             price_now = filter(y, date == (this_date + j), symbol == this_symbol) %>% select(close)
             j = j + 1
-            
-            print(sprintf("Now Price %i row", i))
-            print(sprintf("Now Price %i try", j))
+
         }
         
         k = 1
@@ -42,9 +43,7 @@ process_data = function(x, y) {
             ## Keep trying one day in the past 
             price_future = filter(y, date == (this_date + 365 - k), symbol == this_symbol) %>% select(close)
             k = k + 1
-            
-            print(sprintf("Future Price %i row", i))
-            print(sprintf("Future Price %i try", k))
+
         }
         
     ## Calculate percentage change
@@ -53,7 +52,7 @@ process_data = function(x, y) {
     ## How to deal with stock splits 
     ## Assume this means more than 50% decrease 
     ## Let's just set to 0% change 
-    if(percent_change <= -0.50) {
+    if(percent_change <= -0.35) {
         percent_change = 0
     }
     

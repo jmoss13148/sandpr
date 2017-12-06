@@ -1,0 +1,585 @@
+---
+title: "sandpr Explainer Document"
+author: "Jackson Moss"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+devtools::load_all()
+library(dplyr)
+library(tidyr)
+library(keras)
+library(tensorflow)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+## Do workflow 
+price_data = read.csv("../data/prices.csv", header = T)
+fundamentals_data = read.csv("../data/fundamentals.csv", header = T)
+
+x = prepare_data(x = fundamentals_data, y = price_data)
+
+cleaned_price_data = clean_price(x = x[["y"]])
+
+# y = process_data(x = x[["x"]], y = price_data)
+
+# portfolio_type = "long short"
+# 
+# K = backend()
+# 
+# data = train_nn(x                      = y, 
+#                 layers                 = c(40), 
+#                 portfolio              = portfolio_type,
+#                 dropout_rate           = .10,
+#                 activation             = "relu",
+#                 loss_function          = "mean_squared_error",
+#                 optimizer              = optimizer_adam,
+#                 learning_rate          = 0.000025,
+#                 n_epochs               = 100,
+#                 batch_size             = 32,
+#                 validation_prop        = 0.12,
+#                 seed                   = 15
+#                 )
+# 
+# p1 = plot(data[["history"]], method = "auto", smooth = TRUE)
+#     
+# preds = make_predictions(data  = data,
+#                          epoch = 50,
+#                          type  = portfolio_type)
+#     
+# annualized_sharpe = compute_sharpe(data        = data,
+#                                    preds       = preds,
+#                                    prices_data = cleaned_price_data,
+#                                    type        = portfolio_type)
+```
+## Introduction
+
+The **sandpr** package provides data, functions, and machine learning algorithms that construct stock portfolios for the equities market. It uses publicly available data from Kaggle to train feed forward, fully connected neural network models. The package provides functionality to create both long only and market neutral (long short) portfolios, each for the calendar year of 2016. **sandpr** mainly uses the `dplyr` and `tidyr` packages for data cleaning, and uses the `keras` package with a `tensorflow` backend for neural networks. 
+
+The chronological methodology of the analytic process is as follows. 
+
+1. Clean and process the data sets
+2. Construct and train a neural network model
+3. Choose a model to use on the test data 
+3. Interpret results  
+
+Instructions to install the package are below. 
+
+```{r, eval = FALSE, echo = TRUE}
+library(devtools)
+devtools::install_github("jmoss13148/sandpr")
+
+## For futher information about the package 
+help(package = "sandpr")
+```
+
+## Data 
+
+The raw data is in the form of two Kaggle data sets, which are read into R as csv files. The first data set, `fundamentals_data`, contains yearly fundamental information for S&P 500 stocks, mainly between the years of 2012 and 2017. The column headers in this data set are potential predictors for the neural network models, and include PE ratio, accounts receivable, depreciation, and many other comany indicators. The second data set, `price_data` contains daily price information for S&P 500 stocks between the years of 2010 and 2017. 
+
+We load the data sets into R as below.  
+
+```{r, echo = TRUE, eval = FALSE}
+price_data = read.csv("data/prices.csv", header = T)
+fundamentals_data = read.csv("data/fundamentals.csv", header = T)
+```
+
+Cleaning these data sets is an important part of the analytic process. The data is first subsetted to contain correct stocks and time periods. Next, potential predictor variables are normalized in preparation for the NN model. A function that does the above is as follows. 
+
+```{r, eval = FALSE, echo = TRUE}
+prepare_data = function(x, y) {
+
+    ## Remove variables we don't want 
+    x = x %>% select(-X, -For.Year)
+    
+    ## Coerce to correct classes
+    x$Ticker.Symbol = as.character(x$Ticker.Symbol)
+    y$symbol = as.character(y$symbol)
+    
+    ## Already have "%Y-%m-%d" in fundamentals data 
+    y$date = as.Date(as.character(y$date), format = "%m/%d/%y")
+    
+    ## Convert date to date class
+    x$Period.Ending = as.Date(as.character(x$Period.Ending), format = "%Y-%m-%d")
+    
+    ## Remove information for anything after 2015
+    x = x %>% filter(Period.Ending <= "2015-12-31" & Period.Ending >= "2012-01-01")
+    
+    ## Only work with companies with price data that spans end of 2012 to end of 2016
+    ## Get list of tickers that we want 
+    companies = unique(y$symbol)
+    companies_keep = character()
+    
+    lower_dates = as.Date(c("2013-12-31", "2013-12-30", "2013-12-29"), format = "%Y-%m-%d")
+    upper_dates = as.Date(c("2016-12-31", "2016-12-30", "2016-12-29"), format = "%Y-%m-%d")
+    
+    ## Loop through all companies 
+    for(i in 1:length(companies)) {
+        
+        this_company = filter(y, symbol == companies[i])
+        this_company_dates = this_company$date
+        
+        ## If we have the lower and upper range of our
+        if(sum(lower_dates %in% this_company_dates) > 0 && sum(upper_dates %in% this_company_dates) > 0) {
+           companies_keep = c(companies_keep, companies[i]) 
+        } 
+    }
+    
+    ## Subset for the companies we want 
+    x = x %>% filter(Ticker.Symbol %in% companies_keep)
+    
+    ## Filter out all companies that do not contain fundamentals data 
+    ## for the date of "2015-12-31"
+    new_companies_keep = character()
+    possible_companies = unique(x$Ticker.Symbol)
+    
+    for(i in 1:length(possible_companies)) {
+        this_company_new = filter(x, Ticker.Symbol == possible_companies[i]) %>% 
+            select(Period.Ending)
+        
+        ## Check if we have date 
+        if(as.Date("2015-12-31") %in% this_company_new$Period.Ending) {
+            new_companies_keep = c(new_companies_keep, possible_companies[i])
+        }
+    }
+    
+    ## Subset for the companies we want 
+    x = x %>% filter(Ticker.Symbol %in% new_companies_keep)
+    
+    ## Deal with missing values 
+    ## Set to average of dataset 
+    columns = c("Cash.Ratio",
+                "Current.Ratio",
+                "Quick.Ratio",
+                "Earnings.Per.Share",
+                "Estimated.Shares.Outstanding")
+    
+    for(i in 1:length(columns)) {
+        x[[columns[i]]][is.na(x[[columns[i]]])] = mean(x[[columns[i]]], na.rm = TRUE)
+    }
+    
+    ## We should also normalize all fundamentals variables 
+    ## Get column names of numeric variables 
+    numeric_names = character()
+    
+    for(i in 1:(length(colnames(x)))) {
+        
+        if(is.numeric(x[, i])) {
+            numeric_names = c(numeric_names, colnames(x[i]))
+        }
+    }
+    
+    ## Scale the numeric columns
+    x <- x %>% mutate_each_(funs(scale(.) %>% as.vector), vars=numeric_names)
+    
+    return(list("x" = x, "y" = y))
+}
+```
+
+Since the NN models will predict the percentage change in price of a stock one year in the future, this variable must be created and added to `fundamentals_data`. The function `process_data` loops through each stock/date combination in `fundamentals_data`, and searches `price_data` for the stock price one year in the future. `process_data` is shown below.  
+
+```{r, eval = FALSE, echo = TRUE}
+process_data = function(x, y) {
+    
+    ## First, make sure our dates are in the same format 
+    ## Already have "%Y-%m-%d" in fundamentals data 
+    y$date = as.Date(as.character(y$date), format = "%m/%d/%y")
+    
+    changes = numeric()
+    
+    ## Loop through each row, get the date, then find the price one year in the future 
+    for(i in 1:nrow(x)) {
+        
+        this_date = x[i, ]$Period.Ending
+        this_symbol = x[i, ]$Ticker.Symbol
+        
+        ## Get the % change in price 1 year in the future 
+        price_now = filter(y, date == this_date, symbol == this_symbol) %>% select(close)
+        price_future = filter(y, date == (this_date + 365), symbol == this_symbol) %>% select(close)
+        
+        ## This might not always work (weekends etc.)
+        ## Keep trying the previous day until we get one that exists 
+        j = 1
+        while(nrow(price_now) == 0) {
+            
+            ## Keep trying one day in the future 
+            price_now = filter(y, date == (this_date + j), symbol == this_symbol) %>% select(close)
+            j = j + 1
+
+        }
+        
+        k = 1
+        while(nrow(price_future) == 0) {
+            
+            ## Keep trying one day in the past 
+            price_future = filter(y, date == (this_date + 365 - k), symbol == this_symbol) %>% select(close)
+            k = k + 1
+
+        }
+        
+    ## Calculate percentage change
+    percent_change = (price_future[1,1] - price_now[1,1]) / price_now[1,1]
+    
+    ## How to deal with stock splits 
+    ## Assume this means more than 35% decrease 
+    ## Let's just set to 0% change 
+    if(percent_change <= -0.35) {
+        percent_change = 0
+    }
+    
+    changes = c(changes, percent_change)
+    }
+    
+    ## Append this to dataframe 
+    x$one_year_price = changes 
+    
+    return(x)
+}
+```
+
+Below is an overview of two issues encountered in the data that are handled by `prepare_data` and `process_data`.
+
+1. Stock Splits 
+    + The original version of `price_data` does not adjust for stock splits. For example, Apple (AAPL) underwent a 7-to-1 split in 2014, right in the middle of our data set. To handle this problem, it is assumed that any one year price decline of more than 35% is due to a stock split. These companies are removed. 
+2. Company Fiscal Years 
+    + For most companies, the fiscal year follows the calendar year, and ends December 31st. However, some companies feature a different date, and report annual information in March, April, or even September. This poses a problem for interpreting results, since the final portfolio is only for the calendar year 2016. Ultimately, it proved better to remove companies with off-cycle fiscal calendars. 
+
+Below is a quick look at the processed version of `fundmentals_data`. 
+
+```{r, echo = FALSE}
+to_show = select(y, Ticker.Symbol, Period.Ending, Accounts.Payable, one_year_price) %>% head()
+to_show
+```
+
+The next step is to add functionality to calculate the Sharpe ratio of a portfolio. The Sharpe ratio characterizes how well the return of an asset compensates the investor for the risk taken, and is the gold standard metric for evaluating a portfolio. In order to do this, a forward one day percentage price change variable is added to `price_data`. A function that does so is as follows. 
+
+```{r, eval = FALSE, echo = TRUE}
+clean_price = function(x) {
+    
+    ## Get variables of interest
+    x = x %>% select(date, symbol, close) %>% arrange(symbol)
+
+    ## Calculate the 1 day forward percentage change
+    x = mutate(x, Row = 1:n()) %>%
+            group_by(symbol) %>%
+                mutate(Percentage_Change = (lead(close) - close) / close) %>%
+                    ungroup() %>% 
+                        select(-Row)
+    
+    ## Change NA values to 0
+    x[is.na(x)] = 0
+    
+    return(x)
+}
+```
+
+Below is a quick look at the processed version of `price_data`. 
+
+```{r, echo = FALSE, eval = TRUE}
+head(cleaned_price_data)
+```
+
+## Neural Network Model
+
+Now that the data is clean, the next step is to build and train a neural network model. The basic idea is to use indicators (PE ratio, Cash Ratio, etc.) from `fundamentals_data` to predict the percentage change in stock price one year in the future. The predictions will be used to construct long only and market neutral portfolios.
+
+Before the network is trained, the data is split into training, validation, and testing sets. The training set is used to adjust the weights of the neural network during training. The validation set is data used to reduce overfitting. Finally, the testing set is used to evaluate the predictive power of the neural network model. 
+
+Below is `train_nn`, the function that builds and trains a neural network model. 
+
+```{r, eval = FALSE, echo = TRUE}
+train_nn = function(x, 
+                    layers                 = c(50), 
+                    portfolio              = "long short",
+                    dropout_rate           = 0.2,
+                    activation             = "relu",
+                    loss_function          = "mean_squared_error",
+                    optimizer              = optimizer_adam,
+                    learning_rate          = 0.0001,
+                    n_epochs               = 50,
+                    batch_size             = 32,
+                    validation_prop        = 0.1,
+                    seed                   = 42
+                    ) { 
+    
+    ## For the purpose of reproducible results
+    sess <- tf$Session(graph = tf$get_default_graph())
+    
+    ## Instruct Keras to use this session
+    K = backend()
+    K$set_session(sess)
+    
+    ## Reproducibility 
+    tf$set_random_seed(seed)
+    
+    ## Use previous data to predict any stock in the future 
+    ## Order in ascending date
+    x = x %>% arrange(Period.Ending)
+        
+    ## Train before 2015, test 2015 
+    train = filter(x, Period.Ending <= "2015-01-01")
+    test = filter(x, Period.Ending >= "2015-01-01")
+        
+    ## Get test stocks for later analysis
+    test_stocks = test$Ticker.Symbol
+    test_dates = test$Period.Ending
+    
+    ## Split into predictor and response datasets and select correct columns
+    train_x = select(train, -one_year_price, -Ticker.Symbol, -Period.Ending)
+    train_y = select(train, one_year_price, -Period.Ending)
+    
+    test_x = select(test, -one_year_price, -Ticker.Symbol, -Period.Ending)
+    test_y = select(test, one_year_price, -Period.Ending)
+    
+    model <- keras_model_sequential() 
+    model %>% 
+        ## First and second layers
+        layer_dense(units = layers[1], 
+                    activation = activation, 
+                    input_shape = c(ncol(train_x)),
+                    kernel_initializer = initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed)) %>% 
+        layer_dropout(rate = dropout_rate) 
+    
+    ## Rest of layers 
+    if(length(layers) >= 2){
+        
+        ## Add as many new layers as we need
+        for(i in 1:(length(layers) - 1)) {
+        model %>%
+            layer_dense(units = layers[i + 1],
+                        activation = activation,
+                        kernel_initializer=initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed)) %>% 
+            layer_dropout(rate = dropout_rate)
+        }
+    }
+    
+    ## Output layer 
+    model %>% 
+        layer_dense(units = 1,
+                    kernel_initializer=initializer_random_uniform(minval = -0.15, maxval = 0.15, seed = seed))
+    
+    if(portfolio == "long only") {
+        returns_metric = sandpr::returns_long_only
+    } else if(portfolio == "long short") {
+        returns_metric = sandpr::returns_long_short
+    }
+   
+    ## Compile the model
+    model %>% compile(
+        loss = loss_function,
+        optimizer = optimizer(lr = learning_rate),
+        metrics = c("Average_Yearly_Return" = returns_metric))
+    
+    ## In order to save the best 
+    checkpointer = callback_model_checkpoint(filepath = "data/training_runs/weights.{epoch:02d}.hdf5",
+                                             monitor = c("Average_Yearly_Return"),
+                                             verbose = 1, 
+                                             save_best_only = F)
+    
+    ## Train the model 
+    history <- model %>% fit(
+        as.matrix(train_x), as.matrix(train_y), 
+        epochs = n_epochs, batch_size = batch_size, 
+        validation_split = validation_prop,
+        callbacks = checkpointer
+    )
+    
+    ## Convert to dataframe 
+    history_df <- as.data.frame(history)
+    
+    return(list("model"       = model, 
+                "history"     = history, 
+                "history_df"  = history_df,
+                "test_x"      = test_x,
+                "test_y"      = test_y,
+                "test_stocks" = test_stocks,
+                "test_dates"  = test_dates))
+
+}
+```
+
+Below is more information about the parameters. 
+
+* **x** is processed fundamentals data. This data is split into training, validation, and test sets 
+* **layers** specifies the structure of the multilayer perceptron. The first layer is automatically the number of predictors (76), and the subsequent elements of this numeric vector denote the number of nodes in each additional layer
+* **portfolio** specifies the type of portfolio that the model will construct. "long only" invests equal positive weight in the top 10% of stocks. "long short" creates a market neutral portfolio, going long on the top 5% of stocks and shorting the bottom 5% of stocks           
+* **dropout_rate** is the percentage of neurons that are "dropped out" at each epoch in the model 
+* **activation** is the activation function for all layers of the network, excluding the output layer    
+* **loss_function** is the loss function that the model optimizes on. The only option with current functionality is "mean squared error"       
+* **optimizer** is the algorithm used to enact gradient descent. There are a variety of options here. For more information, use `help(package = "keras")`     
+* **learning_rate** specifies the size of the "jumps" during gradient descent. A larger learning rate can find a minimum more quickly, but can can also suffer from overshooting
+* **n_epochs** is the number of complete iterations of the data that the model will see            
+* **batch_size** is the number of samples to be propagated through the network  
+* **validation_prop** is the fraction of the training data to be used as validation data
+* **seed** is the random seed used for the setup and training of the network  
+
+The Keras package includes functionality to collect and graph important metrics during training, like loss and accuracy. The models take in information about a stock and then predict the price one year in the future, minimizing the mean squared error between price predictions and actual prices. However, it is unclear whether a low mean squared error is correlated with an optimal equities portfolios. 
+
+To that end, `sandpr` provides a custom metric to collect during training: yearly return. Consequently, the package provides two metrics to take into account when choosing the final model. In order to write a custom metric with the `Keras` package, it is necessary to use the `Tensorflow` backend. Below is a function that computes yearly return for a long short portfolio, given a vector of predictions and a vector of actual returns. 
+
+```{r, eval = FALSE, echo = TRUE}
+returns_long_short <- function(y_true, y_pred) {
+    
+    ## Find integer value for top % of stocks 
+    number = K$tf$cast(K$tf$multiply(K$tf$constant(0.05), K$tf$cast(K$tf$size(y_pred), dtype = K$tf$float32)), dtype = K$tf$int32)
+    
+    ## Get indices and values for top % of predictions
+    top = K$tf$nn$top_k(input = K$tf$squeeze(y_pred), k = number)
+    
+    ## Get indices and values for the bottom % of predictions 
+    bottom = K$tf$nn$top_k(input = K$tf$squeeze(-y_pred), k = number)
+    bottom_vals = K$tf$negative(bottom$values)
+    bottom_indices = bottom$indices
+    
+    ## Values for top predictions
+    top_values = K$tf$gather(params = y_pred, indices = top$indices)
+    
+    ## Values for bottom predictions 
+    bottom_values = K$tf$gather(params = y_pred, indices = bottom_indices)
+    
+    ## Weight factor for portfolio (equal weighting between top %/2 and bottom %/2)
+    weight_factor = K$tf$divide(K$tf$constant(0.50), K$tf$cast(number, dtype = K$tf$float32))
+    
+    ## True return values for the top predictions
+    return_values_top = K$tf$gather(params = y_true, indices = top$indices)
+    
+    ## True return values for the bottom predictions
+    return_values_bottom = K$tf$gather(params = y_true, indices = bottom_indices)
+    
+    ## Real returns with this portfolio 
+    total_returns_top = K$tf$multiply(weight_factor, K$tf$cast(return_values_top, dtype = K$tf$float32)) %>% 
+        K$tf$reduce_sum()
+    total_returns_bottom = K$tf$multiply(tf$negative(weight_factor), K$tf$cast(return_values_bottom, dtype = K$tf$float32)) %>% 
+        K$tf$reduce_sum()
+    
+    ## Total returns
+    return(tf$add(total_returns_top, total_returns_bottom))
+}
+```
+
+Notice that the function is written entirely in `Tensorflow` syntax, but accessed through `Keras`. 
+
+## Making Predictions and Interpreting Results 
+
+Once the model is trained, it is up to the user to select a final model to make predictions on the test set. The user will have access to four data points during training: loss and yearly return for the the training and validation sets. 
+
+The next step is to make predictions on the test set. Below is a function that makes predictions and constructs a portfolio as specified by the user. 
+
+```{r, eval = FALSE, echo = TRUE}
+make_predictions <- function(data,
+                             epoch,
+                             type = "long short") {
+
+    model = data[["model"]]
+    test_x = data[["test_x"]]
+    test_y = data[["test_y"]]
+    
+    ## Load the weights from the model at the specified epoch 
+    model %>%
+        load_model_weights_hdf5(filepath = sprintf("data/training_runs/weights.%d.hdf5", epoch))
+    
+    ## Make predictions with the model weights at this epoch 
+    predictions = model %>% predict(as.matrix(test_x))
+    
+    ## Start Tensorflow session
+    sess = tf$Session()
+    
+    ## Calculate average yearly return
+    if(type == "long short") {
+        test_returns = sandpr::returns_long_short(y_true = tf$constant(as.matrix(test_y)),
+                                                  y_pred = tf$constant(predictions))
+    } else if(type == "long only") {
+        test_returns = sandpr::returns_long_only(y_true = tf$constant(as.matrix(test_y)),
+                                                  y_pred = tf$constant(predictions))
+    } else {stop("Enter a correct parameter")
+    }
+    
+    test_returns_real = sess$run(test_returns)
+    
+    return(list("predictions" = predictions, "average_returns" = test_returns_real))
+}
+```
+
+The most important parameters in the above function are `epoch` and `type`. `epoch` specifies epoch of the model during training that will be used for evaluation on the test set. `type` determines the which portfolio the function will create, long only or market neutral. 
+
+`sandpr` also provides functionality to evaluate the stock portfolios created by `train_nn` and `make_predictions`. The function `compute_sharpe` calculates three important metrics about the portfolios: annualized return, annualized standard deviation of returns, and Sharpe ratio. 
+
+## Using the `sandpr` package 
+
+Below is a sample workflow to load and process the data, and train a neural network model.
+
+```{r, eval = FALSE, echo = TRUE}
+
+## Load the datasets 
+price_data = read.csv("data/prices.csv", header = T)
+fundamentals_data = read.csv("data/fundamentals.csv", header = T)
+
+## Clean the fundamentals data
+x = prepare_data(x = fundamentals_data, y = price_data)
+y = process_data(x = x[["x"]], y = price_data)
+
+## Clean the price data
+cleaned_price_data = clean_price(x = x[["y"]])
+
+## Specify the porfolio type 
+portfolio_type = "long short"
+
+## Acess the Keras backend 
+K = backend()
+
+## Train a neural network model
+data = train_nn(x                      = y, 
+                layers                 = c(40), 
+                portfolio              = portfolio_type,
+                dropout_rate           = 01,
+                activation             = "relu",
+                loss_function          = "mean_squared_error",
+                optimizer              = optimizer_adam,
+                learning_rate          = 0.000025,
+                n_epochs               = 100,
+                batch_size             = 32,
+                validation_prop        = 0.12,
+                seed                   = 15
+                )
+
+## Draw a plot to show important metrics during training 
+p1 = plot(data[["history"]], method = "auto", smooth = TRUE)
+
+## Make predictions and construct portfolio 
+preds = make_predictions(data  = data,
+                         epoch = i,
+                         type  = portfolio_type)
+
+## Compute Sharpe ratio metrics for the portfolio 
+annualized_sharpe = compute_sharpe(data        = data,
+                                   preds       = preds,
+                                   prices_data = cleaned_price_data,
+                                   type        = portfolio_type)
+```
+
+## Conclusion 
+
+**sandpr** provides data, functions, and machine learning algorithms to construct stock portfolios for the equities market. The package supports long only and market neutral (long short) portfolios, each for the calendar year of 2016. **sandpr** allows retail investors to use deep learning to power their investment decisions. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,6 +1,10 @@
 ##' @description Prepare data for neural network model 
 ##' 
+##' @import dplyr
+##' @import tidyr
+##' 
 ##' @return a dataframe with the relavent columns 
+##' 
 ##' @export
 
 prepare_data = function(x, y) {
@@ -44,6 +48,24 @@ prepare_data = function(x, y) {
     ## Subset for the companies we want 
     x = x %>% filter(Ticker.Symbol %in% companies_keep)
     
+    ## Filter out all companies that do not contain fundamentals data 
+    ## for the date of "2015-12-31"
+    new_companies_keep = character()
+    possible_companies = unique(x$Ticker.Symbol)
+    
+    for(i in 1:length(possible_companies)) {
+        this_company_new = filter(x, Ticker.Symbol == possible_companies[i]) %>% 
+            select(Period.Ending)
+        
+        ## Check if we have date 
+        if(as.Date("2015-12-31") %in% this_company_new$Period.Ending) {
+            new_companies_keep = c(new_companies_keep, possible_companies[i])
+        }
+    }
+    
+    ## Subset for the companies we want 
+    x = x %>% filter(Ticker.Symbol %in% new_companies_keep)
+    
     ## Deal with missing values 
     ## Set to average of dataset 
     columns = c("Cash.Ratio",
@@ -70,5 +92,5 @@ prepare_data = function(x, y) {
     ## Scale the numeric columns
     x <- x %>% mutate_each_(funs(scale(.) %>% as.vector), vars=numeric_names)
     
-    return(x)
+    return(list("x" = x, "y" = y))
 }
