@@ -22,9 +22,9 @@ knitr::include_graphics("../figures/five.png")
 
 While the quant investing space is diverse and funds use a variety of methods, one new strategy has been getting a lot of attention: **Deep Learning**. Deep learning is an artificial intelligence technology that loosely mimics the neurons in our brains. Deep learning methodology can be utilized by what the industry calls a **neural network ((NN))**. The technology, which works best with large data sets, already powers Tesla's self-driving cars and Apple's Siri voice system. 
 
-## What is a Nueral Network, and how do they Help Investors? 
+## What is a Nueral Network, and how can they Help Investors? 
 
-Well what the heck is a neural network? Continuing with the brain analogy, a neural network is a acomputational graph of connected neurons. The neurons exchange signals and connections with one another through math equations, becoming more and more powerful as the system learns. Consider the picture below for a visual representation of how neural network models work. 
+Well what the heck is a neural network? Continuing with the brain analogy, a neural network is a computational graph of connected neurons. The neurons exchange signals and connections with one another through math equations, becoming more and more powerful as the system learns. Consider the picture below for a visual representation of how neural network models work. 
 
 ```{r, echo = FALSE, eval = TRUE, out.width = "600px", fig.align='center'}
 knitr::include_graphics("../figures/six.png")
@@ -46,7 +46,7 @@ The next step is to construct a **portfolio**, or combination of stocks to emplo
 
 In both cases, I'll invest in the top 10% of my predictions. For long only, I'll invest equal weight in each stock in the top 10% of predictions. For long short, I'll invest half my money long in stocks in the top 5% of predictions, and sell short half my money in stocks in the bottom 5% of predictions.  
 
-## Model
+## My Model
 
 Below is a graph that shows important metrics during training for two models: one for a market neutral portfolio and another for a long only portfolio.
 

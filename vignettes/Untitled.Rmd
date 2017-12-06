@@ -25,7 +25,7 @@ x = prepare_data(x = fundamentals_data, y = price_data)
 
 cleaned_price_data = clean_price(x = x[["y"]])
 
-# y = process_data(x = x[["x"]], y = price_data)
+y = process_data(x = x[["x"]], y = price_data)
 
 # portfolio_type = "long short"
 # 
@@ -248,10 +248,10 @@ Below is an overview of two issues encountered in the data that are handled by `
 2. Company Fiscal Years 
     + For most companies, the fiscal year follows the calendar year, and ends December 31st. However, some companies feature a different date, and report annual information in March, April, or even September. This poses a problem for interpreting results, since the final portfolio is only for the calendar year 2016. Ultimately, it proved better to remove companies with off-cycle fiscal calendars. 
 
-Below is a quick look at the processed version of `fundmentals_data`. 
+Below is a quick look at the processed version of `fundmentals_data`. Only selected indicators are shown. 
 
 ```{r, echo = FALSE}
-to_show = select(y, Ticker.Symbol, Period.Ending, Accounts.Payable, one_year_price) %>% head()
+to_show = select(y, Ticker.Symbol, Period.Ending, Accounts.Payable, After.Tax.ROE, Capital.Surplus, one_year_price) %>% head()
 to_show
 ```
 
